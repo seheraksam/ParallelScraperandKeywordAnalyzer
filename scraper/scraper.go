@@ -7,79 +7,81 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/gocolly/colly"
 )
 
-var C *colly.Collector
-
 func Scraper() error {
 	isins := []string{"IE00B1FZS574", "IE00BKX55T58", "IE00B3VVMM84"}
-	etfInfo := EtfInfo{}
-	etdInfos := make([]EtfInfo, 1, 2)
-	link := "www.trackingdifferences.com"
-
-	C = colly.NewCollector(colly.AllowedDomains("www.trackingdifferences.com", "trackingdifferences.com"))
-
-	C.SetCookies(link, []*http.Cookie{})
-
-	C.OnHTML("h1.page-title", func(h *colly.HTMLElement) {
-		etfInfo.Title = h.Text
-		fmt.Println(h.Text)
-	})
-
-	C.OnHTML("div.descfloat p.desc", func(h *colly.HTMLElement) {
-		selection := h.DOM
-		//fmt.Println("desc find:%s", selection.Find("span.desctitle").Text())
-		childNodes := (selection.Children().Nodes)
-		if len(childNodes) == 3 {
-			description := selection.Find("span.desctitle").Text()
-			description = Cleandesk(description)
-			value := selection.FindNodes(childNodes[2])
-			//fmt.Println("%s, %s \n", description, value)
-			switch description {
-			case "Replikation":
-				etfInfo.Replication = value.Text()
-				break
-			case "TER":
-				etfInfo.TotalExpenseRatio = value.Text()
-				break
-			case "TD":
-				etfInfo.TrackingDifference = value.Text()
-				break
-			case "Volumen":
-				etfInfo.Earnings = value.Text()
-				break
-			case "Land":
-				etfInfo.FundSize = value.Text()
-				break
-			}
-		}
-	})
-
-	C.OnScraped(func(r *colly.Response) {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		enc.Encode(etfInfo)
-		etdInfos = append(etdInfos, etfInfo)
-		etfInfo = EtfInfo{}
-	})
-
-	C.OnRequest(func(r *colly.Request) {
-		fmt.Println("Visiting %v", r.URL)
-	})
-
-	C.OnError(func(r *colly.Response, err error) {
-		fmt.Println("Error while scrapping %s", err.Error())
-	})
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	etfInfos := []EtfInfo{}
 
 	for _, ISIN := range isins {
-		// Visit the URL and start scraping
-		err := C.Visit(scrapeUrl(ISIN))
-		if err != nil {
-			log.Fatal(err)
-		}
+		wg.Add(1)
+
+		go func(isin string) {
+			defer wg.Done()
+
+			c := colly.NewCollector(colly.AllowedDomains("www.trackingdifferences.com", "trackingdifferences.com"))
+
+			c.SetCookies("www.trackingdifferences.com", []*http.Cookie{})
+
+			etfInfo := EtfInfo{}
+
+			c.OnHTML("h1.page-title", func(h *colly.HTMLElement) {
+				etfInfo.Title = h.Text
+			})
+
+			c.OnHTML("div.descfloat p.desc", func(h *colly.HTMLElement) {
+				selection := h.DOM
+				childNodes := selection.Children().Nodes
+				if len(childNodes) == 3 {
+					description := Cleandesk(selection.Find("span.desctitle").Text())
+					value := selection.FindNodes(childNodes[2]).Text()
+
+					switch description {
+					case "Replikation":
+						etfInfo.Replication = value
+					case "TER":
+						etfInfo.TotalExpenseRatio = value
+					case "TD":
+						etfInfo.TrackingDifference = value
+					case "Volumen":
+						etfInfo.Earnings = value
+					case "Land":
+						etfInfo.FundSize = value
+					}
+				}
+			})
+
+			c.OnScraped(func(r *colly.Response) {
+				mu.Lock()
+				etfInfos = append(etfInfos, etfInfo)
+				mu.Unlock()
+			})
+
+			c.OnError(func(r *colly.Response, err error) {
+				log.Printf("Error while scraping %s: %v", isin, err)
+			})
+
+			fmt.Printf("Visiting %s\n", scrapeUrl(isin))
+
+			err := c.Visit(scrapeUrl(isin))
+			if err != nil {
+				log.Println("Visit error:", err)
+			}
+		}(ISIN) // ISIN değişkenini parametre olarak geçiriyoruz
 	}
+
+	wg.Wait() // Tüm goroutinelerin bitmesini bekle
+
+	// Sonuçları JSON olarak yazdır
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	enc.Encode(etfInfos)
+
 	return nil
 }
 
@@ -88,12 +90,12 @@ func scrapeUrl(s string) string {
 }
 
 type EtfInfo struct {
-	Title              string
-	Replication        string
-	Earnings           string
-	TotalExpenseRatio  string
-	TrackingDifference string
-	FundSize           string
+	Title              string `json:"title"`
+	Replication        string `json:"replication"`
+	Earnings           string `json:"earnings"`
+	TotalExpenseRatio  string `json:"total_expense_ratio"`
+	TrackingDifference string `json:"tracking_difference"`
+	FundSize           string `json:"fund_size"`
 }
 
 func Cleandesk(s string) string {
