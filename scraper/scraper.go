@@ -72,12 +72,11 @@ func Scraper() error {
 			if err != nil {
 				log.Println("Visit error:", err)
 			}
-		}(ISIN) // ISIN değişkenini parametre olarak geçiriyoruz
+		}(ISIN)
 	}
 
-	wg.Wait() // Tüm goroutinelerin bitmesini bekle
+	wg.Wait()
 
-	// Sonuçları JSON olarak yazdır
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	enc.Encode(etfInfos)
